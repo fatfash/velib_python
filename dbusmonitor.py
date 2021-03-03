@@ -274,35 +274,56 @@ class DbusMonitor(object):
 		return True
 
 	def handler_value_changes(self, changes, path, senderId):
-		try:
-			service = self.servicesById[senderId]
-			a = service.paths[path]
-		except KeyError:
-			# Either senderId or path isn't there, which means
-			# it hasn't been scanned yet.
-			return
-
 		# If this properyChange does not involve a value, our work is done.
 		if 'Value' not in changes:
+			return
+
+		try:
+			service = self.servicesById[senderId]
+		except KeyError:
+			# senderId isn't there, which means it hasn't been scanned yet.
+			return
+
+		# If path is the root, we're expecting a dict of changes, with the key
+		# being a string for the path.
+		if path == '/' and isinstance(changes['Value'], dict):
+			texts = changes['Text']
+			for p, v in changes['Value'].iteritems():
+				v = unwrap_dbus_value(v)
+				try:
+					t = texts[p]
+				except KeyError:
+					t = str(v)
+				self._handler_value_changes(service, '/' + p, v, t)
+		else:
+			v = unwrap_dbus_value(changes['Value'])
+			# Some services don't send Text with their PropertiesChanged events.
+			try:
+				t = changes['Text']
+			except KeyError:
+				t = str(v)
+			self._handler_value_changes(service, path, v, t)
+
+	def _handler_value_changes(self, service, path, value, text):
+		try:
+			a = service.paths[path]
+		except KeyError:
+			# path isn't there, which means it hasn't been scanned yet.
 			return
 
 		service.set_seen(path)
 
 		# First update our store to the new value
-		changes['Value'] = unwrap_dbus_value(changes['Value'])
-		if a.value == changes['Value']:
+		if a.value == value:
 			return
 
-		a.value = changes['Value']
-		try:
-			a.text = changes['Text']
-		except KeyError:
-			# Some services don't send Text with their PropertiesChanged events.
-			a.text = str(a.value)
+		a.value = value
+		a.text = text
 
 		# And do the rest of the processing in on the mainloop
 		if self.valueChangedCallback is not None:
-			idle_add(exit_on_error, self._execute_value_changes, service.name, path, changes, a.options)
+			idle_add(exit_on_error, self._execute_value_changes, service.name, path, {
+				'Value': value, 'Text': text}, a.options)
 
 	def _execute_value_changes(self, serviceName, objectPath, changes, options):
 		# double check that the service still exists, as it might have
